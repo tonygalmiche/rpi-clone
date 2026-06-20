@@ -6,9 +6,13 @@
 # modification, are permitted under the conditions of the BSD LICENSE file at
 # the rpi-clone github source repository:
 #    https://github.com/billw2/rpi-clone
+#
+# Fork maintenu par Tony Galmiche (tony.galmiche@infosaone.com)
+# Le dépôt original (https://github.com/billw2/rpi-clone) n'est plus maintenu.
+# Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=2.0.22
+version=3.0.0
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -88,6 +92,10 @@ fi
 clone=/mnt/clone
 clone_src=/mnt/clone-src
 clone_log=/var/log/$PGM.log
+
+tmp_out=$(mktemp /tmp/${PGM}-out-XXXXXX)
+tmp_log=$(mktemp /tmp/${PGM}-log-XXXXXX)
+trap 'rm -f "$tmp_out" "$tmp_log"' EXIT
 
 HOSTNAME=`hostname`
 
@@ -948,7 +956,7 @@ then
 	Unattended=0
 
 	fstab=/etc/fstab
-	fstab_tmp=/tmp/fstab
+	fstab_tmp=$(mktemp /tmp/fstab-XXXXXX)
 	fstab_save=${fstab}.${PGM}-save
 	confirm "This will change your $fstab, are you sure?" "abort"
 
@@ -1402,10 +1410,10 @@ Use -U for unattended even if initializing.
 	printf "  Imaging past partition 1 start.\n"
 	sync
 	printf "  => dd if=/dev/$src_disk of=/dev/$dst_disk bs=1M count=$count ..."
-	dd if=/dev/$src_disk of=/dev/$dst_disk bs=1M count=$count &> /tmp/$PGM-output
+	dd if=/dev/$src_disk of=/dev/$dst_disk bs=1M count=$count &> $tmp_out
 	if [ "$?" != 0 ]
 	then
-		printf "\n  dd failed.  See /tmp/$PGM-output.\n"
+		printf "\n  dd failed.  See $tmp_out.\n"
 		printf "  Try running $PGM again.\n\n"
 		exit 1
 	fi
@@ -1443,7 +1451,7 @@ Use -U for unattended even if initializing.
 	for ((x = 0; x < 3; ++x))
 	do
 		sleep $((x + 1))
-		sfdisk --force /dev/$dst_disk &> /tmp/$PGM-output <<< "$sfd1"
+		sfdisk --force /dev/$dst_disk &> $tmp_out <<< "$sfd1"
 		if [ "$?" == 0 ]
 		then
 			break
@@ -1451,8 +1459,8 @@ Use -U for unattended even if initializing.
 		if ((x == 2))
 		then
 			printf "\n====$PGM\n==orig:\n%s\n\n==edited:\n%s\n" \
-					"$sfd0" "$sfd1" >> /tmp/$PGM-output
-			printf "\n    Resize failed.  See /tmp/$PGM-output.\n"
+					"$sfd0" "$sfd1" >> $tmp_out
+			printf "\n    Resize failed.  See $tmp_out.\n"
 			printf "    Try running $PGM again.\n\n"
 
 			# Don't let dst disk keep source disk ID.  Can lead to remounts.
@@ -1507,20 +1515,20 @@ Use -U for unattended even if initializing.
 		then
 			ext_label $p "$fs_type" "-L" label
 			printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
-			yes | mkfs -t $mkfs_type $label $dst_dev &>> /tmp/$PGM-output
+			yes | mkfs -t $mkfs_type $label $dst_dev &>> $tmp_out
 			echo ""
 		else
 			if [ "$fs_type" == "swap" ]
 			then
 				printf "  => mkswap $dst_dev\n"
-				mkswap $dst_dev &>> /tmp/$PGM-log
+				mkswap $dst_dev &>> $tmp_log
 			elif ((p != ext_part_num))
 			then
 				if [ "${src_mounted_dir[p]}" != "" ] || ((p == n_image_parts))
 				then
 					ext_label $p $fs_type "-L" label
 					printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
-					yes | mkfs -t $mkfs_type $label $dst_dev &>> /tmp/$PGM-output
+					yes | mkfs -t $mkfs_type $label $dst_dev &>> $tmp_out
 					echo ""
 					if ((p == n_image_parts))
 					then
@@ -1533,10 +1541,10 @@ Use -U for unattended even if initializing.
 					fi					
 				else
 					printf "  => dd if=${src_device[$p]} of=$dst_dev bs=1M ..."
-					dd if=${src_device[$p]} of=$dst_dev bs=1M &>> /tmp/$PGM-output
+					dd if=${src_device[$p]} of=$dst_dev bs=1M &>> $tmp_out
 					if [ "$?" != 0 ]
 					then
-						printf "\n  dd failed.  See /tmp/$PGM-output.\n"
+						printf "\n  dd failed.  See $tmp_out.\n"
 					else
 						echo ""
 					fi
