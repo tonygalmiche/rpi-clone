@@ -1,5 +1,21 @@
 ## rpi-clone
-Latest version: 2.0.22
+Latest version: 3.0.0
+
+> **Fork maintenu** — Le dépôt original de Bill Wilson
+> ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
+> depuis 2019. Ce fork ([tgalmiche/rpi-clone](https://github.com/tgalmiche/rpi-clone))
+> reprend le développement à partir de la version 2.0.22.
+>
+> Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.0.0
+- Correction de sécurité : remplacement des fichiers temporaires à noms
+  prévisibles (`/tmp/rpi-clone-output`) par des fichiers créés avec `mktemp`,
+  éliminant un vecteur d'attaque TOCTOU pour les processus root.
+- Correction de sécurité : validation du hostname dans `rpi-clone-setup` pour
+  prévenir l'injection de métacaractères dans la commande `sed`.
+
+---
 
 Version 2 is a complete rewrite with improved capability over
 the original.  See the examples below.
