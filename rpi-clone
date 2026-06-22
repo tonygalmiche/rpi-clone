@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.1.0
+version=3.1.1
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1289,7 +1289,7 @@ then
 	mkdir $clone_src
 fi
 
-# Do not include a dhpys swapfile in rsync.  It regenerates at boot.
+# Do not include a swapfile in rsync.  It regenerates at boot.
 #
 if [ -f /etc/dphys-swapfile ]
 then
@@ -1299,6 +1299,9 @@ then
 		swapfile=/var/swap
 	fi
 	exclude_swapfile="--exclude $swapfile"
+elif [ -f /var/swap ]
+then
+	exclude_swapfile="--exclude /var/swap"
 fi
 
 if ((grub_auto)) && [ -d /boot/grub ] && command -v grub-install

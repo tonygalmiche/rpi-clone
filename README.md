@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.1.0
+Latest version: 3.1.1
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -7,6 +7,11 @@ Latest version: 3.1.0
 > reprend le développement à partir de la version 2.0.22.
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.1.1
+- Exclusion automatique de `/var/swap` du rsync même si `/etc/dphys-swapfile`
+  est absent (cas Raspberry Pi OS Trixie). Corrige une erreur "No space left
+  on device" lors du clone vers un disque plus petit.
 
 ### Nouveautés version 3.1.0
 - Compatibilité **Raspberry Pi OS Bookworm/Trixie** : la partition boot est
