@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.0.0
+version=3.1.0
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -322,6 +322,11 @@ rsync_file_system()
 		$src_dir \
 		$dst_dir
 	fi
+	rsync_status=$?
+	if [ $rsync_status -ne 0 ] && [ $rsync_status -ne 24 ]
+	then
+		echo "  WARNING: rsync $1 -> $2 exited with status $rsync_status"
+	fi
 	qecho ""
 	}
 
@@ -594,7 +599,25 @@ get_src_disk()
 
 # ==== source (booted) disk info and default mount list
 #
+# On Raspberry Pi OS Bookworm/Trixie, the boot firmware partition is mounted
+# at /boot/firmware instead of /boot. Detect both cases.
 src_boot_dev=`findmnt /boot -o source -n | grep "/dev/"`
+if [ "$src_boot_dev" == "" ]
+then
+	src_boot_dev=`findmnt /boot/firmware -o source -n | grep "/dev/"`
+fi
+
+# Determine the boot partition mount point for use throughout the script
+if findmnt /boot/firmware > /dev/null 2>&1
+then
+	boot_mount="/boot/firmware"
+elif findmnt /boot > /dev/null 2>&1
+then
+	boot_mount="/boot"
+else
+	boot_mount="/boot"
+fi
+
 src_root_dev=`findmnt / -o source -n | grep "/dev/"`
 SD_slot_boot=0
 SD_slot_dst=0
@@ -979,7 +1002,7 @@ then
 		cp $fstab_tmp $fstab
 		printf "Your original fstab is backed up to $fstab_save\n"
 
-		cmdline_txt=/boot/cmdline.txt
+		cmdline_txt=${boot_mount}/cmdline.txt
 		cmdline_save=$cmdline_txt.${PGM}-save
 		if [ -f $cmdline_txt ] && grep -q "$src_root_dev" $cmdline_txt
 		then
@@ -1511,7 +1534,7 @@ Use -U for unattended even if initializing.
 			mkfs_type=$fs_type
 		fi
 
-		if [ "${src_mounted_dir[p]}" == "/boot" ] && ((p == 1))
+		if [ "${src_mounted_dir[p]}" == "$boot_mount" ] && ((p == 1))
 		then
 			ext_label $p "$fs_type" "-L" label
 			printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
@@ -1738,15 +1761,15 @@ qecho ""
 # Fix PARTUUID or device name references in cmdline.txt and fstab
 #
 fstab=${clone}/etc/fstab
-cmdline_txt=${clone}/boot/cmdline.txt
+cmdline_txt=${clone}${boot_mount}/cmdline.txt
 
 if [ -f $cmdline_txt ]
 then
 	if ((leave_sd_usb_boot && SD_slot_dst))
 	then
 		qecho "Leaving SD to USB boot alone."
-		cp $cmdline_txt ${clone}/boot/cmdline.boot
-		cmdline_txt=${clone}/boot/cmdline.boot
+		cp $cmdline_txt ${clone}${boot_mount}/cmdline.boot
+		cmdline_txt=${clone}${boot_mount}/cmdline.boot
 	fi
 	if grep -q $src_disk_ID $cmdline_txt
 	then
@@ -1760,8 +1783,8 @@ then
 	if ((leave_sd_usb_boot && SD_slot_boot))
 	then
 		qecho "Copying USB cmdline.txt to SD card to set up USB boot."
-		cp /boot/cmdline.txt /boot/cmdline.boot
-		cp $cmdline_txt /boot/cmdline.txt
+		cp ${boot_mount}/cmdline.txt ${boot_mount}/cmdline.boot
+		cp $cmdline_txt ${boot_mount}/cmdline.txt
 	fi
 fi
 

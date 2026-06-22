@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.0.0
+Latest version: 3.1.0
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -7,6 +7,14 @@ Latest version: 3.0.0
 > reprend le développement à partir de la version 2.0.22.
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.1.0
+- Compatibilité **Raspberry Pi OS Bookworm/Trixie** : la partition boot est
+  désormais détectée sur `/boot/firmware` (nouveau standard) en plus de
+  `/boot` (ancien standard). Corrige un bug qui laissait la partition boot
+  du clone vide et le PARTUUID de `cmdline.txt` non mis à jour.
+- Ajout d'un avertissement visible si `rsync` échoue silencieusement sur
+  une partition.
 
 ### Nouveautés version 3.0.0
 - Correction de sécurité : remplacement des fichiers temporaires à noms
