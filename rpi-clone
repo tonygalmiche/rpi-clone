@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.2.0
+version=3.3.0
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1814,24 +1814,25 @@ dlog "Montage root : $dst_root_dev -> $clone"
 mount_partition $dst_root_dev $clone ""
 unmount_list="$clone"
 
-dlog "Début rsync root : // -> $clone ($(ls -1 / 2>/dev/null | wc -l) entrées source)"
-rsync_file_system "//" "$clone" "with-root-excludes"
-dlog "Fin rsync root (rc=$rsync_status, $(ls -1 $clone 2>/dev/null | wc -l) entrées destination)"
-
+# Sync des partitions non-root montées (live) AVANT le rsync root.
+# Elles sont rapides (boot ~65Mo) : si une échoue, on abandonne immédiatement
+# sans attendre le long rsync root.
+declare -A presync_done
 for ((p = 1; p <= n_src_parts; p++))
 do
-	if ((!src_exists[p]))
+	presync_done[$p]=0
+	if ((!src_exists[p] || !dst_exists[p]))
 	then
 		continue
 	fi
-	dlog "Partition $p : src_sync=${src_sync_part[$p]}  mount_flag=${dst_mount_flag[$p]}  root=$root_part_num  mounted=${src_mounted_dir[$p]}"
+	dlog "Pré-sync partition $p : src_sync=${src_sync_part[$p]}  mount_flag=${dst_mount_flag[$p]}  root=$root_part_num  mounted=${src_mounted_dir[$p]}"
 	if ((p != root_part_num && src_sync_part[p] && dst_mount_flag[p] == live))
 	then
 		dst_dir=$clone${src_mounted_dir[p]}
-		if [ ! -d $dst_dir ]
+		if [ ! -d "$dst_dir" ]
 		then
 			dlog "  Création du répertoire $dst_dir"
-			mkdir -p $dst_dir
+			mkdir -p "$dst_dir"
 		fi
 
 		dst_dev=/dev/${dst_part_base}${p}
@@ -1845,7 +1846,64 @@ do
 
 		dlog "  Montage p$p : $dst_dev -> $dst_dir"
 		mount_partition "$dst_dev" "$dst_dir" "$unmount_list"
-		local src_count dst_count_before dst_count_after
+		src_count=$(ls -1 "${src_mounted_dir[$p]}/" 2>/dev/null | wc -l)
+		dst_count_before=$(ls -1 "$dst_dir/" 2>/dev/null | wc -l)
+		dlog "  Avant rsync p$p : source=$src_count entrées  destination=$dst_count_before entrées"
+		rsync_file_system "${src_mounted_dir[p]}/" "${dst_dir}" ""
+		dst_count_after=$(ls -1 "$dst_dir/" 2>/dev/null | wc -l)
+		dlog "  Après rsync p$p : rc=$rsync_status  destination=$dst_count_after entrées"
+		unmount_list="$dst_dir $unmount_list"
+		presync_done[$p]=1
+
+		# Vérification immédiate : abort avant le long rsync root si la partition est vide
+		if [ "$dst_count_after" -eq 0 ]
+		then
+			printf "\n** ERREUR : partition %d (%s) vide après rsync **\n" \
+				$p "${src_mounted_dir[$p]}" | tee -a "$debug_log"
+			printf "** Abandon avant le rsync root pour éviter une attente inutile **\n" \
+				| tee -a "$debug_log"
+			unmount_list "$unmount_list"
+			exit 1
+		fi
+	fi
+done
+
+dlog "Début rsync root : // -> $clone ($(ls -1 / 2>/dev/null | wc -l) entrées source)"
+rsync_file_system "//" "$clone" "with-root-excludes"
+dlog "Fin rsync root (rc=$rsync_status, $(ls -1 $clone 2>/dev/null | wc -l) entrées destination)"
+
+for ((p = 1; p <= n_src_parts; p++))
+do
+	if ((!src_exists[p]))
+	then
+		continue
+	fi
+	dlog "Partition $p : src_sync=${src_sync_part[$p]}  mount_flag=${dst_mount_flag[$p]}  root=$root_part_num  mounted=${src_mounted_dir[$p]}"
+	if ((presync_done[$p]))
+	then
+		dlog "  => partition $p déjà synchronisée (pré-sync)"
+		continue
+	fi
+	if ((p != root_part_num && src_sync_part[p] && dst_mount_flag[p] == live))
+	then
+		dst_dir=$clone${src_mounted_dir[p]}
+		if [ ! -d "$dst_dir" ]
+		then
+			dlog "  Création du répertoire $dst_dir"
+			mkdir -p "$dst_dir"
+		fi
+
+		dst_dev=/dev/${dst_part_base}${p}
+		fs_type=${src_fs_type[$p]}
+		ext_label $p $fs_type "" label
+		if [ "$label" != "" ]
+		then
+			qecho "     e2label $dst_dev $label"
+			e2label $dst_dev $label
+		fi
+
+		dlog "  Montage p$p : $dst_dev -> $dst_dir"
+		mount_partition "$dst_dev" "$dst_dir" "$unmount_list"
 		src_count=$(ls -1 "${src_mounted_dir[$p]}/" 2>/dev/null | wc -l)
 		dst_count_before=$(ls -1 "$dst_dir/" 2>/dev/null | wc -l)
 		dlog "  Avant rsync p$p : source=$src_count entrées  destination=$dst_count_before entrées"

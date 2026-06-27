@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.2.0
+Latest version: 3.3.0
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -7,6 +7,12 @@ Latest version: 3.2.0
 > reprend le développement à partir de la version 2.0.22.
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.3.0
+- Vérification anticipée des partitions non-root (ex. boot FAT32) : elles sont
+  désormais synchronisées **avant** le long rsync root. Si une partition est
+  vide après son rsync, le clone est **abandonné immédiatement** avec un message
+  d'erreur, sans attendre inutilement la fin du rsync root (~10 min).
 
 ### Nouveautés version 3.2.0
 - Ajout de l'option **`-d` / `--debug`** : mode debug avec logs détaillés
