@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.3.0
+Latest version: 3.4.0
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -7,6 +7,21 @@ Latest version: 3.3.0
 > reprend le développement à partir de la version 2.0.22.
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.4.0
+- **Correction du bug partition boot vide** (voir `BUG-boot-partition-rsync.md`
+  pour l'analyse complète) :
+  - En mode INITIALIZE, la partition boot FAT32 est désormais toujours copiée
+    par **`dd`** (copie brute du device) au lieu de `mkfs` + `rsync`. Cela
+    élimine deux causes de défaillance silencieuse : l'incompatibilité des
+    flags rsync (`-A`, `-X`) avec FAT32, et le démontage automatique de
+    `/boot/firmware` par systemd lors d'un conflit de PARTUUID.
+  - Le **Disk ID de destination est changé immédiatement après `sfdisk`**,
+    avant `partprobe` et le `sleep 2`. Cela supprime la fenêtre durant laquelle
+    sda et mmcblk0 partagent le même PARTUUID, ce qui déclenchait le démontage
+    de `/boot/firmware` par systemd.
+  - Vérification immédiate après chaque `dd` de partition : si la partition
+    copiée est vide, le clone est abandonné avant le long rsync root.
 
 ### Nouveautés version 3.3.0
 - Vérification anticipée des partitions non-root (ex. boot FAT32) : elles sont

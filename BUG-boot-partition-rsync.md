@@ -44,66 +44,65 @@ DEBUG:   p1: fs=fat32  mounted=/boot/firmware  sync=1  mount_flag=1
 DEBUG:   p1: fs=fat32  mounted=  sync=0  mount_flag=0
 ```
 
-## Analyse de la cause
+## Analyse de la cause (confirmée v3.3.0)
 
-La cause exacte n'a pas été confirmée. Hypothèses par ordre de probabilité :
+### Cause racine : conflit de PARTUUID provoqué par sfdisk
 
-### 1. Incompatibilité des flags rsync avec FAT32 (plus probable)
+Séquence exacte du bug, confirmée par les logs systemd :
 
-`rsync_options` inclut `-A` (ACLs) et `-X` (xattrs). FAT32 ne supporte ni
-les ACLs POSIX ni les attributs étendus. Rsync pourrait échouer à lire
-les attributs de la source FAT32 et abandonner silencieusement avec rc=0.
+```
+19:35:22 → systemd : Mounted boot-firmware.mount (/boot/firmware)
+19:36:13 → systemd : Unmounted boot-firmware.mount  ← pendant rpi-clone !
+19:36:21 → rpi-clone : mkfs p1 et p2 (trop tard)
+19:36:30 → rpi-clone pré-sync : source=0 entrées → rsync copie rien
+```
 
-Le flag `-o` (preserve owner) est également problématique sur FAT32.
+**Explication** : `sfdisk` copie la table de partition de mmcblk0 vers sda,
+y compris le **Disk ID MBR** — ce qui donne à sda le même PARTUUID que mmcblk0.
+Le fstab de ce Pi contient :
+```
+PARTUUID=92e253d6-01  /boot/firmware  vfat  defaults  0  2
+```
+Dès que sda1 apparaît avec le même PARTUUID=92e253d6-01, systemd détecte un
+conflit et **démonte automatiquement /boot/firmware**. Le changement de Disk ID
+(fdisk) arrivait après un `sleep 2`, trop tard.
 
-### 2. Problème de cache noyau après mkfs
+Une fois /boot/firmware démonté, `ls /boot/firmware/` retourne 0 entrées
+(le répertoire vide sur l'ext4 root, pas la FAT32). Rsync croit que la source
+est vide et retourne rc=0 sans rien copier.
 
-Après `mkfs.vfat /dev/sda1` suivi d'un montage immédiat, le noyau pourrait
-présenter une vue incohérente de la partition. Rsync comparerait alors des
-métadonnées corrompues et conclurait qu'il n'y a rien à transférer.
+### Cause secondaire : rsync incompatible avec FAT32 monté
 
-### 3. Granularité des timestamps FAT32
+Même sans le démontage systemd, rsync avec les flags `-A` (ACLs) et `-X`
+(xattrs) sur une source FAT32 retourne rc=0 sans rien copier. FAT32 ne
+supporte pas ces attributs POSIX.
 
-FAT32 a une granularité de 2 secondes sur les timestamps. Combiné avec `-t`
-(preserve times) et `-W` (whole-file), rsync pourrait considérer les fichiers
-comme identiques si la comparaison de timestamps est faussée.
+## Fix implémenté en v3.3.0
 
-## Comment reproduire pour diagnostic
+### 1. Changement de Disk ID immédiatement après sfdisk
+
+Le Disk ID est maintenant changé **avant** `partprobe` et le `sleep 2`,
+ce qui ferme la fenêtre de conflit PARTUUID :
 
 ```bash
-# Vérifier que /boot/firmware est montée
-mount | grep boot
-
-# Si montée, lancer le clone en debug
-rpi-clone sda -f --debug
-
-# Observer dans /var/log/rpi-clone-debug.log :
-# - "p1: fs=fat32  mounted=/boot/firmware" → chemin rsync (bug potentiel)
-# - "p1: fs=fat32  mounted=" → chemin dd (fiable)
+sfdisk --force /dev/sda <<< "$sfd1"
+# Immédiatement :
+fdisk /dev/sda  # nouveau Disk ID aléatoire
+sync
+sleep 2
+partprobe /dev/sda  # kernel voit le nouveau PARTUUID, pas de conflit
 ```
 
-Ajouter `--stats` au rsync en debug (déjà fait en v3.2.0) permet de voir si
-rsync détecte les fichiers source :
-```
-Number of files: 72       ← rsync voit les fichiers
-Number of regular files transferred: 0   ← mais ne transfère rien → bug confirmé
-```
+### 2. Toujours dd pour la partition boot en mode INITIALIZE
 
-## Fix proposé (non encore implémenté)
+`dd if=/dev/mmcblk0p1 of=/dev/sda1 bs=1M` lit le device brut, indépendamment
+de l'état de montage. Plus robuste que mkfs + rsync :
+- Immune au démontage systemd
+- Immune aux incompatibilités rsync/FAT32
+- Copie exacte octet par octet, y compris UUID FAT et métadonnées
 
-Dans le mode INITIALIZE, toujours utiliser `dd` pour la partition boot (p1),
-même si elle est montée, plutôt que mkfs + rsync. Modifier le bloc autour de
-la ligne 1610 du script :
+### 3. Vérification immédiate après dd
 
-```bash
-# Remplacer le chemin mkfs-seulement par dd direct :
-if [ "${src_mounted_dir[p]}" == "$boot_mount" ] && ((p == 1))
-then
-    printf "  => dd if=${src_device[$p]} of=$dst_dev bs=1M ..."
-    dd if=${src_device[$p]} of=$dst_dev bs=1M &>> $tmp_out
-    # Pas besoin de mkfs ni de rsync ultérieur — src_sync_part[p]=0
-    src_sync_part[p]=0
-```
-
-Ce changement uniformise le comportement : la partition boot est toujours
-copiée par `dd` en mode INITIALIZE, indépendamment de son état de montage.
+Après le dd, la partition est montée dans un répertoire tmp, les fichiers sont
+comptés, et le clone est abandonné si la partition est vide — avant le long
+rsync root (~10 min).

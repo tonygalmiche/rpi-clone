@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.3.0
+version=3.4.0
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1561,10 +1561,9 @@ Use -U for unattended even if initializing.
 		fi
 	done
 	printf "\n    Resize success.\n"
+	# Changer le disk ID immédiatement après sfdisk, avant partprobe et le sleep,
+	# pour éviter que systemd détecte un conflit de PARTUUID et démonte /boot/firmware.
 	printf "  Changing destination Disk ID ..."
-	sync
-	sleep 2
-
 	new_id=$(od -A n -t x -N 4 /dev/urandom | tr -d " ")
 	qprintf "x\ni\n0x$new_id\nr\nw\nq\n" | fdisk /dev/$dst_disk > /dev/null
 	sync
@@ -1609,17 +1608,38 @@ Use -U for unattended even if initializing.
 
 		if [ "${src_mounted_dir[p]}" == "$boot_mount" ] && ((p == 1))
 		then
-			ext_label $p "$fs_type" "-L" label
-			printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
-			yes | mkfs -t $mkfs_type $label $dst_dev &>> $tmp_out
-			mkfs_rc=${PIPESTATUS[1]}
-			dlog "mkfs p$p : mkfs -t $mkfs_type $label $dst_dev  rc=$mkfs_rc"
-			if ((debug && mkfs_rc != 0))
+			# Toujours utiliser dd pour la partition boot, même si elle est montée.
+			# rsync sur FAT32 peut retourner rc=0 sans rien copier (incompatibilité
+			# des flags -A/-X). De plus, sfdisk peut provoquer un démontage par
+			# systemd si le PARTUUID conflicte — dd lit le device brut, immune à
+			# l'état du montage.
+			printf "  => dd if=${src_device[$p]} of=$dst_dev bs=1M ..."
+			dd if=${src_device[$p]} of=$dst_dev bs=1M &>> $tmp_out
+			if [ "$?" != 0 ]
 			then
-				printf "  ** DEBUG: mkfs rc=%d (voir %s) **\n" $mkfs_rc $debug_log
-				tail -5 $tmp_out | while IFS= read -r line; do dlog "  mkfs stderr: $line"; done
+				printf "\n  dd failed.  See $tmp_out.\n"
+			else
+				echo ""
+				verify_dd_tmp=$(mktemp -d /tmp/${PGM}-verify-dd-XXXXXX)
+				if mount "$dst_dev" "$verify_dd_tmp" 2>/dev/null
+				then
+					dd_file_count=$(ls -1 "$verify_dd_tmp/" 2>/dev/null | wc -l)
+					umount "$verify_dd_tmp"
+					dlog "  Vérification dd p$p (boot) : $dd_file_count entrées dans $dst_dev"
+					if [ "$dd_file_count" -eq 0 ]
+					then
+						printf "** ERREUR : partition boot vide après dd (%s -> %s) **\n" \
+							"${src_device[$p]}" "$dst_dev"
+						printf "** Abandon du clone **\n"
+						rmdir "$verify_dd_tmp"
+						exit 1
+					fi
+				else
+					dlog "  Vérification dd p$p (boot) : impossible de monter $dst_dev"
+				fi
+				rmdir "$verify_dd_tmp"
 			fi
-			echo ""
+			src_sync_part[p]=0
 		else
 			if [ "$fs_type" == "swap" ]
 			then
