@@ -314,30 +314,63 @@ rsync_file_system()
 
 	qprintf "  => rsync $1 $2 $3 ..."
 
+	local debug_opt=""
+	((debug)) && debug_opt="--stats"
+
 	if [ "$3" == "with-root-excludes" ]
 	then
-		rsync $rsync_options --delete \
-			$exclude_useropt \
-			$exclude_swapfile \
-			--exclude '.gvfs' \
-			--exclude '/dev/*' \
-			--exclude '/mnt/clone/*' \
-			--exclude '/proc/*' \
-			--exclude '/run/*' \
-			--exclude '/sys/*' \
-			--exclude '/tmp/*' \
-			--exclude 'lost\+found/*' \
-		$src_dir \
-		$dst_dir
+		if ((debug))
+		then
+			rsync $rsync_options --delete $debug_opt \
+				$exclude_useropt \
+				$exclude_swapfile \
+				--exclude '.gvfs' \
+				--exclude '/dev/*' \
+				--exclude '/mnt/clone/*' \
+				--exclude '/proc/*' \
+				--exclude '/run/*' \
+				--exclude '/sys/*' \
+				--exclude '/tmp/*' \
+				--exclude 'lost\+found/*' \
+			$src_dir \
+			$dst_dir 2>&1 | tee -a "$debug_log"
+			rsync_status=${PIPESTATUS[0]}
+		else
+			rsync $rsync_options --delete \
+				$exclude_useropt \
+				$exclude_swapfile \
+				--exclude '.gvfs' \
+				--exclude '/dev/*' \
+				--exclude '/mnt/clone/*' \
+				--exclude '/proc/*' \
+				--exclude '/run/*' \
+				--exclude '/sys/*' \
+				--exclude '/tmp/*' \
+				--exclude 'lost\+found/*' \
+			$src_dir \
+			$dst_dir
+			rsync_status=$?
+		fi
 	else
-		rsync $rsync_options --delete \
-			$exclude_useropt \
-			--exclude '.gvfs' \
-			--exclude 'lost\+found/*' \
-		$src_dir \
-		$dst_dir
+		if ((debug))
+		then
+			rsync $rsync_options --delete $debug_opt \
+				$exclude_useropt \
+				--exclude '.gvfs' \
+				--exclude 'lost\+found/*' \
+			$src_dir \
+			$dst_dir 2>&1 | tee -a "$debug_log"
+			rsync_status=${PIPESTATUS[0]}
+		else
+			rsync $rsync_options --delete \
+				$exclude_useropt \
+				--exclude '.gvfs' \
+				--exclude 'lost\+found/*' \
+			$src_dir \
+			$dst_dir
+			rsync_status=$?
+		fi
 	fi
-	rsync_status=$?
 	if [ $rsync_status -ne 0 ] && [ $rsync_status -ne 24 ]
 	then
 		echo "  WARNING: rsync $1 -> $2 exited with status $rsync_status"
@@ -1781,9 +1814,9 @@ dlog "Montage root : $dst_root_dev -> $clone"
 mount_partition $dst_root_dev $clone ""
 unmount_list="$clone"
 
-dlog "Début rsync root : // -> $clone"
+dlog "Début rsync root : // -> $clone ($(ls -1 / 2>/dev/null | wc -l) entrées source)"
 rsync_file_system "//" "$clone" "with-root-excludes"
-dlog "Fin rsync root (rc rsync=$rsync_status)"
+dlog "Fin rsync root (rc=$rsync_status, $(ls -1 $clone 2>/dev/null | wc -l) entrées destination)"
 
 for ((p = 1; p <= n_src_parts; p++))
 do
@@ -1812,9 +1845,13 @@ do
 
 		dlog "  Montage p$p : $dst_dev -> $dst_dir"
 		mount_partition "$dst_dev" "$dst_dir" "$unmount_list"
-		dlog "  Début rsync p$p : ${src_mounted_dir[$p]}/ -> $dst_dir"
+		local src_count dst_count_before dst_count_after
+		src_count=$(ls -1 "${src_mounted_dir[$p]}/" 2>/dev/null | wc -l)
+		dst_count_before=$(ls -1 "$dst_dir/" 2>/dev/null | wc -l)
+		dlog "  Avant rsync p$p : source=$src_count entrées  destination=$dst_count_before entrées"
 		rsync_file_system "${src_mounted_dir[p]}/" "${dst_dir}" ""
-		dlog "  Fin rsync p$p (rc rsync=$rsync_status)"
+		dst_count_after=$(ls -1 "$dst_dir/" 2>/dev/null | wc -l)
+		dlog "  Après rsync p$p : rc=$rsync_status  destination=$dst_count_after entrées"
 		unmount_list="$dst_dir $unmount_list"
 	else
 		if ((p != root_part_num))
@@ -1935,17 +1972,19 @@ then
 			continue
 		fi
 
-		dst_used_kb=$(df "$verify_tmp" | tail -1 | tr -s ' ' | cut -d' ' -f3)
-		dst_avail_kb=$(df "$verify_tmp" | tail -1 | tr -s ' ' | cut -d' ' -f4)
+		dst_used_kb=$(LC_ALL=C df -k "$verify_tmp" 2>/dev/null | awk 'NR==2{print $3}')
 		dst_files=$(find "$verify_tmp" -not -path "*/lost+found/*" 2>/dev/null | wc -l)
+		dst_files=$((dst_files - 1))  # exclure le répertoire racine lui-même
 		printf "    Clone   : %s ko utilisés, %d fichiers/répertoires\n" \
 			"$dst_used_kb" "$dst_files" | tee -a "$debug_log"
 
 		if [ "$src_mount" != "" ] && [ -d "$src_mount" ]
 		then
-			src_used_kb=$(df "$src_mount" | tail -1 | tr -s ' ' | cut -d' ' -f3)
-			printf "    Source  : %s ko utilisés (montage : %s)\n" \
-				"$src_used_kb" "$src_mount" | tee -a "$debug_log"
+			src_used_kb=$(LC_ALL=C df -k "$src_mount" 2>/dev/null | awk 'NR==2{print $3}')
+			src_files=$(find "$src_mount" -not -path "*/lost+found/*" 2>/dev/null | wc -l)
+			src_files=$((src_files - 1))
+			printf "    Source  : %s ko utilisés, %d fichiers/répertoires (montage : %s)\n" \
+				"$src_used_kb" "$src_files" "$src_mount" | tee -a "$debug_log"
 		fi
 
 		if [ "$dst_files" -eq 0 ] || [ "$dst_used_kb" -lt 4 ]
