@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.1.1
+Latest version: 3.2.0
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -7,6 +7,19 @@ Latest version: 3.1.1
 > reprend le développement à partir de la version 2.0.22.
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.2.0
+- Ajout de l'option **`-d` / `--debug`** : mode debug avec logs détaillés
+  persistants dans `/var/log/rpi-clone-debug.log` et vérification automatique
+  des partitions clonées à la fin du clone.
+  - Trace les codes de retour de chaque `mkfs` (silencieux jusqu'ici)
+  - Affiche la table de partitions après `partprobe` (détection race condition)
+  - Logge l'état des variables internes (`src_sync_part`, `dst_mount_flag`,
+    `boot_mount`…) avant la phase de sync
+  - Indique explicitement pourquoi une partition est ignorée lors du sync
+  - Monte chaque partition clonée et vérifie le nombre de fichiers et l'espace
+    utilisé, avec alerte si une partition est vide
+  - Usage : `sudo rpi-clone sda --debug` ou `sudo rpi-clone sda -f --debug`
 
 ### Nouveautés version 3.1.1
 - Exclusion automatique de `/var/swap` du rsync même si `/etc/dphys-swapfile`
@@ -139,6 +152,7 @@ usage: sys-clone sdN {-v|--verbose} {-f|--force-initialize} {-f2}
          {-s|--setup host} {-e|--edit-fstab sdX } {-m|--mountdir dir }
          {-L|--label-partitions label} {-l|--leave-sd-usb-boot}
          {-a|--all-sync} {-F|--Force-sync} {-x} {-V|--version}
+         {-d|--debug}
          {--convert-fstab-to-partuuid}
          {--exclude=PATTERN} {--exclude-from=FILE}
 
@@ -181,6 +195,8 @@ usage: sys-clone sdN {-v|--verbose} {-f|--force-initialize} {-f2}
                 If a source partition mount error, skip it and do other syncs.
     -x      - use set -x for very verbose bash shell script debugging
     -V      - print rpi-clone version.
+    -d      - mode debug: logs détaillés dans /var/log/rpi-clone-debug.log
+                et vérification des partitions clonées à la fin.
 ```
 + See examples below for usage of these command line options.
 + rpi-clone version 1 briefly had a -s option that is replaced with a

@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.1.1
+version=3.2.0
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -97,6 +97,17 @@ tmp_out=$(mktemp /tmp/${PGM}-out-XXXXXX)
 tmp_log=$(mktemp /tmp/${PGM}-log-XXXXXX)
 trap 'rm -f "$tmp_out" "$tmp_log"' EXIT
 
+debug=0
+debug_log=/var/log/$PGM-debug.log
+
+dlog()
+	{
+	if ((debug))
+	then
+		printf "[$(date '+%H:%M:%S')] DEBUG: %s\n" "$*" | tee -a "$debug_log"
+	fi
+	}
+
 HOSTNAME=`hostname`
 
 
@@ -108,6 +119,7 @@ usage: $PGM sdN {-v|--verbose} {-f|--force-initialize} {-f2}
          {-s|--setup host} {-e|--edit-fstab sdX } {-m|--mountdir dir }
          {-L|--label-partitions label} {-l|--leave-sd-usb-boot}
          {-a|--all-sync} {-F|--Force-sync} {-x} {-V|--version}
+         {-d|--debug}
          {--convert-fstab-to-partuuid}
          {--exclude=PATTERN} {--exclude-from=FILE}
 
@@ -150,6 +162,9 @@ usage: $PGM sdN {-v|--verbose} {-f|--force-initialize} {-f2}
                 If a source partition mount error, skip it and do other syncs.
     -x      - use set -x for very verbose bash shell script debugging
     -V      - print rpi-clone version.
+    -d      - mode debug: logs détaillés dans $debug_log et vérification des
+                partitions à la fin du clone (mkfs rc, montages, rsync, état
+                des variables internes).
 
   Clone a booted file system to a destination disk which is bootable.
 
@@ -930,6 +945,9 @@ do
 			echo $PGM Version: $version
 			exit 0
 			;;
+		-d|--debug)
+			debug=1
+			;;
 		-h|--help)
 			usage
 			;;
@@ -1418,6 +1436,20 @@ Use -U for unattended even if initializing.
 	then
 		exit 1
 	fi
+	if ((debug))
+	then
+		printf "\n[$(date '+%H:%M:%S')] === rpi-clone $version DEBUG - $(date) ===\n" | tee -a "$debug_log"
+		dlog "src_disk=$src_disk  dst_disk=$dst_disk"
+		dlog "boot_mount=$boot_mount  root_part_num=$root_part_num  boot_part_num=$boot_part_num"
+		dlog "src_disk_size=$src_disk_size  dst_disk_size=$dst_disk_size"
+		dlog "n_src_parts=$n_src_parts  n_image_parts=$n_image_parts"
+		for ((pi = 1; pi <= n_src_parts; pi++))
+		do
+			dlog "  p$pi: fs=${src_fs_type[$pi]}  mounted=${src_mounted_dir[$pi]}  sync=${src_sync_part[$pi]}  mount_flag=${dst_mount_flag[$pi]}  used_sectors=${src_used_sectors[$pi]}"
+		done
+		dlog "last_part_space=$last_part_space  force_sync=$force_sync"
+	fi
+
 	confirm "Initialize and clone to the destination disk ${dst_disk}?" "abort"
 
 	if ((!Unattended)) && [ "$ext_label" == "" ]
@@ -1507,6 +1539,11 @@ Use -U for unattended even if initializing.
 	partprobe "/dev/$dst_disk"
 	sleep 2
 	echo ""
+	if ((debug))
+	then
+		dlog "Table partitions après partprobe /dev/$dst_disk :"
+		parted -m /dev/$dst_disk unit s print 2>&1 | while IFS= read -r line; do dlog "  $line"; done
+	fi
 
 	for ((p = n_image_parts + 1; p <= n_src_parts; p++))
 	do
@@ -1542,6 +1579,13 @@ Use -U for unattended even if initializing.
 			ext_label $p "$fs_type" "-L" label
 			printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
 			yes | mkfs -t $mkfs_type $label $dst_dev &>> $tmp_out
+			mkfs_rc=${PIPESTATUS[1]}
+			dlog "mkfs p$p : mkfs -t $mkfs_type $label $dst_dev  rc=$mkfs_rc"
+			if ((debug && mkfs_rc != 0))
+			then
+				printf "  ** DEBUG: mkfs rc=%d (voir %s) **\n" $mkfs_rc $debug_log
+				tail -5 $tmp_out | while IFS= read -r line; do dlog "  mkfs stderr: $line"; done
+			fi
 			echo ""
 		else
 			if [ "$fs_type" == "swap" ]
@@ -1555,6 +1599,13 @@ Use -U for unattended even if initializing.
 					ext_label $p $fs_type "-L" label
 					printf "  => mkfs -t $mkfs_type $label $dst_dev ..."
 					yes | mkfs -t $mkfs_type $label $dst_dev &>> $tmp_out
+					mkfs_rc=${PIPESTATUS[1]}
+					dlog "mkfs p$p : mkfs -t $mkfs_type $label $dst_dev  rc=$mkfs_rc"
+					if ((debug && mkfs_rc != 0))
+					then
+						printf "  ** DEBUG: mkfs rc=%d (voir %s) **\n" $mkfs_rc $debug_log
+						tail -5 $tmp_out | while IFS= read -r line; do dlog "  mkfs stderr: $line"; done
+					fi
 					echo ""
 					if ((p == n_image_parts))
 					then
@@ -1726,10 +1777,13 @@ then
 	e2label $dst_root_dev $label
 fi
 
+dlog "Montage root : $dst_root_dev -> $clone"
 mount_partition $dst_root_dev $clone ""
 unmount_list="$clone"
 
+dlog "Début rsync root : // -> $clone"
 rsync_file_system "//" "$clone" "with-root-excludes"
+dlog "Fin rsync root (rc rsync=$rsync_status)"
 
 for ((p = 1; p <= n_src_parts; p++))
 do
@@ -1737,11 +1791,13 @@ do
 	then
 		continue
 	fi
+	dlog "Partition $p : src_sync=${src_sync_part[$p]}  mount_flag=${dst_mount_flag[$p]}  root=$root_part_num  mounted=${src_mounted_dir[$p]}"
 	if ((p != root_part_num && src_sync_part[p] && dst_mount_flag[p] == live))
 	then
 		dst_dir=$clone${src_mounted_dir[p]}
 		if [ ! -d $dst_dir ]
 		then
+			dlog "  Création du répertoire $dst_dir"
 			mkdir -p $dst_dir
 		fi
 
@@ -1754,9 +1810,17 @@ do
 			e2label $dst_dev $label
 		fi
 
+		dlog "  Montage p$p : $dst_dev -> $dst_dir"
 		mount_partition "$dst_dev" "$dst_dir" "$unmount_list"
+		dlog "  Début rsync p$p : ${src_mounted_dir[$p]}/ -> $dst_dir"
 		rsync_file_system "${src_mounted_dir[p]}/" "${dst_dir}" ""
+		dlog "  Fin rsync p$p (rc rsync=$rsync_status)"
 		unmount_list="$dst_dir $unmount_list"
+	else
+		if ((p != root_part_num))
+		then
+			dlog "  => partition $p IGNORÉE (sync=${src_sync_part[$p]} flag=${dst_mount_flag[$p]} live=$live)"
+		fi
 	fi
 done
 qecho ""
@@ -1845,10 +1909,70 @@ qecho "Done with clone to /dev/$dst_disk"
 qprintf "   Start - %s    End - %s    Elapsed Time - %d:%02d\n" \
 		"$start_time" "$stop_time" "$((clone_sec / 60))" "$((clone_sec % 60))"
 
+if ((debug))
+then
+	printf "\n=== VÉRIFICATION DU CLONE (debug) ===\n" | tee -a "$debug_log"
+	verify_tmp=$(mktemp -d /tmp/${PGM}-verify-XXXXXX)
+	verify_errors=0
+
+	for ((p = 1; p <= n_src_parts; p++))
+	do
+		if ((!src_exists[p])) || [ "${src_fs_type[$p]}" == "swap" ] || [ "${src_fs_type[$p]}" == "--" ] || [ "${src_fs_type[$p]}" == "EXT" ]
+		then
+			continue
+		fi
+
+		dst_dev=/dev/${dst_part_base}${p}
+		src_mount="${src_mounted_dir[$p]}"
+		fs_type="${src_fs_type[$p]}"
+
+		printf "\n  Partition %d (%s, %s)\n" $p "$dst_dev" "$fs_type" | tee -a "$debug_log"
+
+		if ! mount "$dst_dev" "$verify_tmp" 2>/dev/null
+		then
+			printf "    ** ERREUR : impossible de monter %s **\n" "$dst_dev" | tee -a "$debug_log"
+			((verify_errors++))
+			continue
+		fi
+
+		dst_used_kb=$(df "$verify_tmp" | tail -1 | tr -s ' ' | cut -d' ' -f3)
+		dst_avail_kb=$(df "$verify_tmp" | tail -1 | tr -s ' ' | cut -d' ' -f4)
+		dst_files=$(find "$verify_tmp" -not -path "*/lost+found/*" 2>/dev/null | wc -l)
+		printf "    Clone   : %s ko utilisés, %d fichiers/répertoires\n" \
+			"$dst_used_kb" "$dst_files" | tee -a "$debug_log"
+
+		if [ "$src_mount" != "" ] && [ -d "$src_mount" ]
+		then
+			src_used_kb=$(df "$src_mount" | tail -1 | tr -s ' ' | cut -d' ' -f3)
+			printf "    Source  : %s ko utilisés (montage : %s)\n" \
+				"$src_used_kb" "$src_mount" | tee -a "$debug_log"
+		fi
+
+		if [ "$dst_files" -eq 0 ] || [ "$dst_used_kb" -lt 4 ]
+		then
+			printf "    ** ATTENTION : partition vide ou quasi-vide ! **\n" | tee -a "$debug_log"
+			((verify_errors++))
+		fi
+
+		umount "$verify_tmp"
+	done
+
+	rmdir "$verify_tmp"
+	printf "\n" | tee -a "$debug_log"
+	if ((verify_errors > 0))
+	then
+		printf "  ** %d problème(s) détecté(s) - voir %s **\n" \
+			"$verify_errors" "$debug_log" | tee -a "$debug_log"
+	else
+		printf "  Toutes les partitions vérifiées sans erreur.\n" | tee -a "$debug_log"
+	fi
+	printf "=== FIN VÉRIFICATION ===\n\n" | tee -a "$debug_log"
+fi
+
 if ((!unattended))
 then
 	echo -n $"
-Cloned partitions are mounted on $clone for inspection or customizing. 
+Cloned partitions are mounted on $clone for inspection or customizing.
 
 Hit Enter when ready to unmount the /dev/$dst_disk partitions ..."
 
@@ -1857,5 +1981,10 @@ fi
 
 unmount_list "$unmount_list"
 qprintf "===============================\n\n"
+
+if ((debug))
+then
+	printf "Log debug complet : %s\n\n" "$debug_log"
+fi
 
 exit 0
