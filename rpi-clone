@@ -1657,6 +1657,24 @@ Use -U for unattended even if initializing.
 						printf "\n  dd failed.  See $tmp_out.\n"
 					else
 						echo ""
+						verify_dd_tmp=$(mktemp -d /tmp/${PGM}-verify-dd-XXXXXX)
+						if mount "$dst_dev" "$verify_dd_tmp" 2>/dev/null
+						then
+							dd_file_count=$(ls -1 "$verify_dd_tmp/" 2>/dev/null | wc -l)
+							umount "$verify_dd_tmp"
+							dlog "  Vérification dd p$p : $dd_file_count entrées dans $dst_dev"
+							if [ "$dd_file_count" -eq 0 ]
+							then
+								printf "** ERREUR : partition %d vide après dd (%s -> %s) **\n" \
+									$p "${src_device[$p]}" "$dst_dev"
+								printf "** Abandon du clone **\n"
+								rmdir "$verify_dd_tmp"
+								exit 1
+							fi
+						else
+							dlog "  Vérification dd p$p : impossible de monter $dst_dev"
+						fi
+						rmdir "$verify_dd_tmp"
 					fi
 					ext_label $p $fs_type "" label
 					if [ "$label" != "" ]
