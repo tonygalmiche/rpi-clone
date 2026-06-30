@@ -8,6 +8,28 @@ Latest version: 3.5
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
 
+## rpi-clone-light
+
+Variante minimaliste, sans option (sauf `--debug`), pour le cas d'usage
+courant : un Pi avec exactement 2 partitions (boot FAT32 + root ext4), clone
+vers un disque qui repart toujours de zéro (suppression + recréation des
+partitions à chaque exécution).
+
+```
+rpi-clone-light sda
+rpi-clone-light sda --debug
+```
+
+- Recrée la table de partitions de destination depuis celle de la source,
+  avec un Disk ID aléatoire (même mécanisme anti-conflit PARTUUID que la
+  3.5 du script principal).
+- Boot copié par `dd` (taille identique à la source), root par `rsync`
+  (la destination peut être plus petite ou plus grande).
+- Nouvel UUID ext4 (`tune2fs -U random`) et nouveau PARTUUID pour les deux
+  partitions ; `fstab` et `cmdline.txt` du clone mis à jour en conséquence.
+- `--debug` affiche les vérifications (fichiers copiés, PARTUUID disque vs
+  `cmdline.txt`/`fstab`).
+
 ### Nouveautés version 3.5
 Suite du correctif du bug "partition boot vide" de la 3.4.0 (voir
 `BUG-boot-partition-rsync.md`) : le clone semblait réussi (boot copié,

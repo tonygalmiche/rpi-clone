@@ -1,0 +1,236 @@
+#!/bin/bash
+#
+# rpi-clone-light - clone minimaliste du système Raspberry Pi en cours
+# d'exécution vers un disque de destination à 2 partitions (boot FAT32 +
+# root ext4), sans option superflue.
+#
+# Usage : rpi-clone-light <disque-destination> [--debug]
+#   ex.   rpi-clone-light sda
+#         rpi-clone-light sda --debug
+#
+# Toujours : supprime et recrée les 2 partitions sur la destination, copie
+# le boot par dd (taille identique à la source), copie le root par rsync
+# (la destination peut être plus petite que la source), régénère le Disk ID
+# / PARTUUID de la destination et corrige fstab + cmdline.txt en conséquence.
+
+PGM=rpi-clone-light
+version=1.0
+
+dst_disk=""
+debug=0
+
+for arg in "$@"
+do
+	case "$arg" in
+		--debug) debug=1 ;;
+		-*) echo "$PGM: option inconnue '$arg'. Seule --debug est supportée." >&2; exit 1 ;;
+		*)
+			if [ -n "$dst_disk" ]
+			then
+				echo "$PGM: un seul disque de destination est accepté." >&2
+				exit 1
+			fi
+			dst_disk="$arg"
+			;;
+	esac
+done
+
+if [ -z "$dst_disk" ]
+then
+	echo "Usage: $PGM <disque-destination> [--debug]" >&2
+	echo "  ex.  $PGM sda" >&2
+	exit 1
+fi
+
+if [ "$EUID" -ne 0 ]
+then
+	echo "$PGM doit être lancé en root." >&2
+	exit 1
+fi
+
+dlog()
+	{
+	((debug)) && printf "[%s] DEBUG: %s\n" "$(date '+%H:%M:%S')" "$1"
+	}
+
+die()
+	{
+	echo "** ERREUR : $1 **" >&2
+	exit 1
+	}
+
+# Construit le préfixe des partitions d'un disque : "mmcblk0p"/"nvme0n1p"
+# mais "sda" (pas de 'p' avant le numéro) pour les disques sdX.
+part_base()
+	{
+	case "$1" in
+		*mmcblk*|*nvme*) echo "${1}p" ;;
+		*) echo "$1" ;;
+	esac
+	}
+
+# ==== Identification source / destination ====
+
+src_root_dev=$(findmnt / -o source -n)
+[ -n "$src_root_dev" ] || die "impossible de déterminer le disque racine source."
+src_disk=$(lsblk -no PKNAME "$src_root_dev")
+[ -n "$src_disk" ] || die "impossible de déterminer le disque parent de $src_root_dev."
+
+[ -b "/dev/$dst_disk" ] || die "/dev/$dst_disk n'existe pas."
+[ "$dst_disk" != "$src_disk" ] || die "le disque de destination ne peut pas être le disque source ($src_disk)."
+
+src_base=$(part_base "$src_disk")
+dst_base=$(part_base "$dst_disk")
+
+src_p1="/dev/${src_base}1"
+src_p2="/dev/${src_base}2"
+dst_p1="/dev/${dst_base}1"
+dst_p2="/dev/${dst_base}2"
+
+[ -b "$src_p1" ] && [ -b "$src_p2" ] || die "$src_disk doit avoir exactement 2 partitions."
+
+src_size=$(lsblk -bno SIZE "/dev/$src_disk")
+dst_size=$(lsblk -bno SIZE "/dev/$dst_disk")
+
+printf "Source      : /dev/%s (%s)\n" "$src_disk" "$(numfmt --to=iec "$src_size")"
+printf "Destination : /dev/%s (%s)\n" "$dst_disk" "$(numfmt --to=iec "$dst_size")"
+dlog "src_p1=$src_p1 src_p2=$src_p2 dst_p1=$dst_p1 dst_p2=$dst_p2"
+
+printf "\n** ATTENTION : toutes les données de /dev/%s vont être effacées ! **\n" "$dst_disk"
+read -r -p "Continuer ? (yes/no) : " answer
+[ "$answer" == "yes" ] || { echo "Abandon."; exit 1; }
+
+# ==== Démontage préalable de toute partition de la destination ====
+
+for part in $(lsblk -no NAME "/dev/$dst_disk" | tail -n +2)
+do
+	umount "/dev/$part" 2>/dev/null
+done
+
+# ==== Recréation de la table de partitions (copiée de la source, Disk ID neuf) ====
+
+new_id=$(od -A n -t x4 -N 4 /dev/urandom | tr -d ' \n')
+src_id=$(sfdisk -d "/dev/$src_disk" | sed -n 's/^label-id: 0x//p')
+[ -n "$src_id" ] || die "impossible de lire le Disk ID source."
+
+sfd=$(sfdisk -d "/dev/$src_disk")
+# Nouveau Disk ID écrit directement dans le dump, avant l'appel à sfdisk :
+# si la destination écrivait d'abord le Disk ID de la source puis le
+# changeait après coup, systemd peut détecter un conflit de PARTUUID le
+# temps de l'écriture et démonter une partition source montée par PARTUUID.
+sfd=$(echo "$sfd" | sed -E "s/^label-id: .*/label-id: 0x$new_id/")
+# La dernière partition (root) prend tout l'espace restant du disque de
+# destination, qui peut être plus petit ou plus grand que la source.
+sfd=$(echo "$sfd" | sed -E "/\/dev\/${src_base}2/s/size=[^,]*,//")
+
+dlog "Table de partitions à appliquer sur /dev/$dst_disk :"
+((debug)) && echo "$sfd" | while IFS= read -r line; do dlog "  $line"; done
+
+printf "\nPartitionnement de /dev/%s ...\n" "$dst_disk"
+sfdisk --force "/dev/$dst_disk" <<< "$sfd" || die "sfdisk a échoué sur /dev/$dst_disk."
+
+sync
+partprobe "/dev/$dst_disk"
+sleep 2
+
+[ -b "$dst_p1" ] && [ -b "$dst_p2" ] || die "les partitions $dst_p1/$dst_p2 n'existent pas après le partitionnement."
+
+boot_partuuid="${new_id}-01"
+root_partuuid="${new_id}-02"
+src_boot_partuuid="${src_id}-01"
+src_root_partuuid="${src_id}-02"
+
+dlog "Nouveau PARTUUID boot=$boot_partuuid root=$root_partuuid (source boot=$src_boot_partuuid root=$src_root_partuuid)"
+
+# ==== Copie de la partition boot (dd, taille identique à la source) ====
+
+printf "Copie de la partition boot (dd %s -> %s) ...\n" "$src_p1" "$dst_p1"
+dd if="$src_p1" of="$dst_p1" bs=4M conv=fsync || die "dd de la partition boot a échoué."
+
+if ((debug))
+then
+	tmp_boot=$(mktemp -d)
+	mount "$dst_p1" "$tmp_boot" && {
+		n=$(ls -1 "$tmp_boot" | wc -l)
+		dlog "Vérification boot clone : $n entrées dans $dst_p1"
+		umount "$tmp_boot"
+	}
+	rmdir "$tmp_boot"
+fi
+
+# ==== Copie de la partition root (mkfs + rsync, tailles différentes possibles) ====
+
+printf "Formatage de la partition root (%s) ...\n" "$dst_p2"
+mkfs.ext4 -F -q "$dst_p2" || die "mkfs.ext4 a échoué sur $dst_p2."
+tune2fs -U random "$dst_p2" > /dev/null
+
+mnt=$(mktemp -d /mnt/${PGM}-XXXXXX)
+mount "$dst_p2" "$mnt" || die "impossible de monter $dst_p2 sur $mnt."
+
+cleanup()
+	{
+	umount "$mnt/boot/firmware" 2>/dev/null
+	umount "$mnt" 2>/dev/null
+	rmdir "$mnt" 2>/dev/null
+	}
+trap cleanup EXIT
+
+printf "Copie de la partition root (rsync / -> %s) ...\n" "$mnt"
+rsync_opts="-aHAX --numeric-ids --delete"
+((debug)) && rsync_opts="$rsync_opts --stats"
+rsync $rsync_opts \
+	--exclude="/dev/*" --exclude="/proc/*" --exclude="/sys/*" \
+	--exclude="/run/*" --exclude="/tmp/*" --exclude="/mnt/*" \
+	--exclude="/media/*" --exclude="lost+found" \
+	/ "$mnt/" || die "rsync de la partition root a échoué."
+
+mkdir -p "$mnt/boot/firmware"
+mount "$dst_p1" "$mnt/boot/firmware" || die "impossible de monter $dst_p1 sur $mnt/boot/firmware."
+
+if ((debug))
+then
+	n=$(ls -1 "$mnt/boot/firmware" | wc -l)
+	dlog "Vérification boot remonté sous \$clone : $n entrées dans $mnt/boot/firmware"
+fi
+
+# ==== Correction des PARTUUID dans fstab et cmdline.txt ====
+
+printf "Mise à jour des PARTUUID dans fstab et cmdline.txt ...\n"
+sed -i "s/${src_id}/${new_id}/g" "$mnt/etc/fstab"
+
+cmdline_txt="$mnt/boot/firmware/cmdline.txt"
+[ -f "$cmdline_txt" ] || cmdline_txt="$mnt/boot/cmdline.txt"
+if [ -f "$cmdline_txt" ]
+then
+	sed -i "s/${src_id}/${new_id}/g" "$cmdline_txt"
+else
+	dlog "Aucun cmdline.txt trouvé (ni boot/firmware ni boot), rien à corriger."
+fi
+
+# ==== Vérification finale (debug) ====
+
+if ((debug))
+then
+	echo ""
+	dlog "=== Vérification finale ==="
+	real_root_partuuid=$(blkid -s PARTUUID -o value "$dst_p2")
+	real_boot_partuuid=$(blkid -s PARTUUID -o value "$dst_p1")
+	dlog "PARTUUID réel disque : boot=$real_boot_partuuid root=$real_root_partuuid"
+
+	if [ -f "$cmdline_txt" ]
+	then
+		cmdline_root=$(grep -o 'root=PARTUUID=[^ ]*' "$cmdline_txt" | sed 's/root=PARTUUID=//')
+		dlog "cmdline.txt root=PARTUUID=$cmdline_root"
+		if [ "$cmdline_root" == "$real_root_partuuid" ]
+		then
+			dlog "  => OK : cmdline.txt concorde avec le disque."
+		else
+			dlog "  => ATTENTION : cmdline.txt ($cmdline_root) NE concorde PAS avec le disque ($real_root_partuuid) !"
+		fi
+	fi
+
+	dlog "fstab :"
+	grep PARTUUID "$mnt/etc/fstab" | while IFS= read -r line; do dlog "  $line"; done
+fi
+
+printf "\nClone de /dev/%s vers /dev/%s terminé.\n" "$src_disk" "$dst_disk"
