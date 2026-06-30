@@ -10,14 +10,15 @@ Latest version: 3.5
 
 ## rpi-clone-light
 
-Variante minimaliste, sans option (sauf `--debug`), pour le cas d'usage
-courant : un Pi avec exactement 2 partitions (boot FAT32 + root ext4), clone
-vers un disque qui repart toujours de zéro (suppression + recréation des
-partitions à chaque exécution).
+Variante minimaliste, sans option (sauf `--debug` et `--verif`), pour le cas
+d'usage courant : un Pi avec exactement 2 partitions (boot FAT32 + root
+ext4), clone vers un disque qui repart toujours de zéro (suppression +
+recréation des partitions à chaque exécution).
 
 ```
 rpi-clone-light sda
 rpi-clone-light sda --debug
+rpi-clone-light sda --verif
 ```
 
 - Recrée la table de partitions de destination depuis celle de la source,
@@ -27,8 +28,12 @@ rpi-clone-light sda --debug
   (la destination peut être plus petite ou plus grande).
 - Nouvel UUID ext4 (`tune2fs -U random`) et nouveau PARTUUID pour les deux
   partitions ; `fstab` et `cmdline.txt` du clone mis à jour en conséquence.
-- `--debug` affiche les vérifications (fichiers copiés, PARTUUID disque vs
-  `cmdline.txt`/`fstab`).
+- `--debug` affiche les détails de chaque étape et les vérifications
+  (fichiers copiés, PARTUUID disque vs `cmdline.txt`/`fstab`).
+- `--verif` ne clone rien : monte/démonte juste les partitions existantes du
+  disque de destination (lecture seule) pour vérifier que leur PARTUUID réel
+  correspond à `fstab`/`cmdline.txt`, et compte les fichiers de chaque
+  partition. Aucune confirmation demandée.
 
 ### Nouveautés version 3.5
 Suite du correctif du bug "partition boot vide" de la 3.4.0 (voir

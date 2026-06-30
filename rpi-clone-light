@@ -4,26 +4,34 @@
 # d'exécution vers un disque de destination à 2 partitions (boot FAT32 +
 # root ext4), sans option superflue.
 #
-# Usage : rpi-clone-light <disque-destination> [--debug]
+# Usage : rpi-clone-light <disque-destination> [--debug] [--verif]
 #   ex.   rpi-clone-light sda
 #         rpi-clone-light sda --debug
+#         rpi-clone-light sda --verif
 #
 # Toujours : supprime et recrée les 2 partitions sur la destination, copie
 # le boot par dd (taille identique à la source), copie le root par rsync
 # (la destination peut être plus petite que la source), régénère le Disk ID
 # / PARTUUID de la destination et corrige fstab + cmdline.txt en conséquence.
+#
+# --verif : ne clone rien. Monte/démonte simplement les partitions du disque
+# de destination (lecture seule) pour vérifier qu'elles existent, que leur
+# PARTUUID réel correspond à ce qui est écrit dans fstab/cmdline.txt, et
+# compte les fichiers de chaque partition. Aucune confirmation demandée.
 
 PGM=rpi-clone-light
 version=1.0
 
 dst_disk=""
 debug=0
+verif=0
 
 for arg in "$@"
 do
 	case "$arg" in
 		--debug) debug=1 ;;
-		-*) echo "$PGM : option inconnue '$arg'. Seule --debug est supportée." >&2; exit 1 ;;
+		--verif) verif=1 ;;
+		-*) echo "$PGM : option inconnue '$arg'. Seules --debug et --verif sont supportées." >&2; exit 1 ;;
 		*)
 			if [ -n "$dst_disk" ]
 			then
@@ -37,7 +45,7 @@ done
 
 if [ -z "$dst_disk" ]
 then
-	echo "Usage : $PGM <disque-destination> [--debug]" >&2
+	echo "Usage : $PGM <disque-destination> [--debug] [--verif]" >&2
 	echo "  ex. : $PGM sda" >&2
 	exit 1
 fi
@@ -110,6 +118,89 @@ then
 fi
 dlog "src_p1=$src_p1 src_p2=$src_p2 dst_p1=$dst_p1 dst_p2=$dst_p2"
 
+# ==== Mode --verif : vérification seule, ni partitionnement ni copie ====
+
+if ((verif))
+then
+	[ -b "$dst_p1" ] && [ -b "$dst_p2" ] || die "$dst_p1/$dst_p2 n'existent pas sur /dev/$dst_disk."
+
+	verif_errors=0
+	mnt_root=$(mktemp -d /mnt/${PGM}-verif-root-XXXXXX)
+	mnt_boot=$(mktemp -d /mnt/${PGM}-verif-boot-XXXXXX)
+
+	cleanup_verif()
+		{
+		umount "$mnt_root/boot/firmware" 2>/dev/null
+		umount "$mnt_boot" 2>/dev/null
+		umount "$mnt_root" 2>/dev/null
+		rmdir "$mnt_boot" "$mnt_root" 2>/dev/null
+		}
+	trap cleanup_verif EXIT
+
+	echo "=== Vérification de /dev/$dst_disk ==="
+
+	mount -o ro "$dst_p2" "$mnt_root" || die "impossible de monter $dst_p2."
+	mount -o ro "$dst_p1" "$mnt_boot" || die "impossible de monter $dst_p1."
+
+	real_root_partuuid=$(blkid -s PARTUUID -o value "$dst_p2")
+	real_boot_partuuid=$(blkid -s PARTUUID -o value "$dst_p1")
+	printf "PARTUUID réel   : boot=%s  root=%s\n" "$real_boot_partuuid" "$real_root_partuuid"
+
+	fstab="$mnt_root/etc/fstab"
+	if [ -f "$fstab" ]
+	then
+		fstab_boot_partuuid=$(awk '$2=="/boot/firmware"{sub(/^PARTUUID=/,"",$1); print $1}' "$fstab")
+		fstab_root_partuuid=$(awk '$2=="/"{sub(/^PARTUUID=/,"",$1); print $1}' "$fstab")
+		printf "fstab           : boot=%s  root=%s\n" "$fstab_boot_partuuid" "$fstab_root_partuuid"
+		if [ "$fstab_boot_partuuid" == "$real_boot_partuuid" ] && [ "$fstab_root_partuuid" == "$real_root_partuuid" ]
+		then
+			echo "  => OK : fstab cohérent avec le disque."
+		else
+			echo "  => ERREUR : fstab NE correspond PAS au PARTUUID réel du disque !"
+			((verif_errors++))
+		fi
+	else
+		echo "  => ERREUR : $fstab introuvable."
+		((verif_errors++))
+	fi
+
+	cmdline_txt="$mnt_boot/cmdline.txt"
+	[ -f "$cmdline_txt" ] || cmdline_txt="$mnt_root/boot/cmdline.txt"
+	if [ -f "$cmdline_txt" ]
+	then
+		cmdline_root_partuuid=$(grep -o 'root=PARTUUID=[^ ]*' "$cmdline_txt" | sed 's/root=PARTUUID=//')
+		printf "cmdline.txt     : root=%s\n" "$cmdline_root_partuuid"
+		if [ "$cmdline_root_partuuid" == "$real_root_partuuid" ]
+		then
+			echo "  => OK : cmdline.txt cohérent avec le disque."
+		else
+			echo "  => ERREUR : cmdline.txt NE correspond PAS au PARTUUID réel du disque !"
+			((verif_errors++))
+		fi
+	else
+		echo "  => ERREUR : cmdline.txt introuvable (ni dans boot, ni dans boot/firmware)."
+		((verif_errors++))
+	fi
+
+	n_boot=$(find "$mnt_boot" -mindepth 1 2>/dev/null | wc -l)
+	n_root=$(find "$mnt_root" -mindepth 1 -not -path "*/lost+found/*" -not -path "$mnt_root/boot/firmware/*" 2>/dev/null | wc -l)
+	printf "Fichiers        : boot=%d  root=%d\n" "$n_boot" "$n_root"
+	if [ "$n_boot" -eq 0 ] || [ "$n_root" -eq 0 ]
+	then
+		echo "  => ERREUR : une partition est vide !"
+		((verif_errors++))
+	fi
+
+	echo ""
+	if ((verif_errors == 0))
+	then
+		echo "Vérification terminée sans erreur."
+	else
+		echo "Vérification terminée : $verif_errors problème(s) détecté(s)."
+	fi
+	exit $((verif_errors > 0 ? 1 : 0))
+fi
+
 printf "** ATTENTION : toutes les données de /dev/%s (%s) vont être effacées ! (source : /dev/%s, %s) **\n" \
 	"$dst_disk" "$(taille "$dst_size")" "$src_disk" "$(taille "$src_size")"
 read -r -p "Continuer ? (oui/non) : " reponse
@@ -117,7 +208,7 @@ read -r -p "Continuer ? (oui/non) : " reponse
 
 debut_horodatage=$(date '+%H:%M:%S')
 debut_sec=$(date '+%s')
-echo "Début : $debut_horodatage"
+echo "Début : $debut_horodatage (compter environ 10mn)"
 
 # ==== Démontage préalable de toute partition de la destination ====
 
@@ -150,7 +241,7 @@ if ((debug))
 then
 	sfdisk --force "/dev/$dst_disk" <<< "$sfd" || die "sfdisk a échoué sur /dev/$dst_disk."
 else
-	sfdisk --force "/dev/$dst_disk" <<< "$sfd" > /dev/null || die "sfdisk a échoué sur /dev/$dst_disk."
+	sfdisk --force "/dev/$dst_disk" <<< "$sfd" &> /dev/null || die "sfdisk a échoué sur /dev/$dst_disk."
 fi
 
 sync
@@ -190,7 +281,12 @@ fi
 # ==== Copie de la partition root (mkfs + rsync, tailles différentes possibles) ====
 
 step "Formatage de la partition root ($dst_p2)"
-mkfs.ext4 -F -q "$dst_p2" || die "mkfs.ext4 a échoué sur $dst_p2."
+if ((debug))
+then
+	mkfs.ext4 -F -q "$dst_p2" || die "mkfs.ext4 a échoué sur $dst_p2."
+else
+	mkfs.ext4 -F -q "$dst_p2" &> /dev/null || die "mkfs.ext4 a échoué sur $dst_p2."
+fi
 tune2fs -U random "$dst_p2" > /dev/null
 
 mnt=$(mktemp -d /mnt/${PGM}-XXXXXX)
@@ -276,4 +372,3 @@ fin_sec=$(date '+%s')
 duree_sec=$((fin_sec - debut_sec))
 
 echo "Fin   : $fin_horodatage (durée : $((duree_sec / 60)) min $((duree_sec % 60)) s)"
-printf "Clone /dev/%s -> /dev/%s terminé.\n" "$src_disk" "$dst_disk"
