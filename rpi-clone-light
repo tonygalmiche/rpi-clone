@@ -23,11 +23,11 @@ for arg in "$@"
 do
 	case "$arg" in
 		--debug) debug=1 ;;
-		-*) echo "$PGM: option inconnue '$arg'. Seule --debug est supportée." >&2; exit 1 ;;
+		-*) echo "$PGM : option inconnue '$arg'. Seule --debug est supportée." >&2; exit 1 ;;
 		*)
 			if [ -n "$dst_disk" ]
 			then
-				echo "$PGM: un seul disque de destination est accepté." >&2
+				echo "$PGM : un seul disque de destination est accepté." >&2
 				exit 1
 			fi
 			dst_disk="$arg"
@@ -37,8 +37,8 @@ done
 
 if [ -z "$dst_disk" ]
 then
-	echo "Usage: $PGM <disque-destination> [--debug]" >&2
-	echo "  ex.  $PGM sda" >&2
+	echo "Usage : $PGM <disque-destination> [--debug]" >&2
+	echo "  ex. : $PGM sda" >&2
 	exit 1
 fi
 
@@ -50,7 +50,13 @@ fi
 
 dlog()
 	{
-	((debug)) && printf "[%s] DEBUG: %s\n" "$(date '+%H:%M:%S')" "$1"
+	((debug)) && printf "[%s] DEBUG : %s\n" "$(date '+%H:%M:%S')" "$1"
+	}
+
+step()
+	{
+	((!debug)) && printf "  - %s\n" "$1"
+	dlog "$1"
 	}
 
 die()
@@ -67,6 +73,11 @@ part_base()
 		*mmcblk*|*nvme*) echo "${1}p" ;;
 		*) echo "$1" ;;
 	esac
+	}
+
+taille()
+	{
+	numfmt --to=iec --suffix=o "$1"
 	}
 
 # ==== Identification source / destination ====
@@ -89,16 +100,22 @@ dst_p2="/dev/${dst_base}2"
 
 [ -b "$src_p1" ] && [ -b "$src_p2" ] || die "$src_disk doit avoir exactement 2 partitions."
 
-src_size=$(lsblk -bno SIZE "/dev/$src_disk")
-dst_size=$(lsblk -bno SIZE "/dev/$dst_disk")
+src_size=$(lsblk -bdno SIZE "/dev/$src_disk")
+dst_size=$(lsblk -bdno SIZE "/dev/$dst_disk")
 
-printf "Source      : /dev/%s (%s)\n" "$src_disk" "$(numfmt --to=iec "$src_size")"
-printf "Destination : /dev/%s (%s)\n" "$dst_disk" "$(numfmt --to=iec "$dst_size")"
+echo "=== $PGM $version ==="
+printf "Source      : /dev/%s (%s)\n" "$src_disk" "$(taille "$src_size")"
+printf "Destination : /dev/%s (%s)\n" "$dst_disk" "$(taille "$dst_size")"
 dlog "src_p1=$src_p1 src_p2=$src_p2 dst_p1=$dst_p1 dst_p2=$dst_p2"
 
 printf "\n** ATTENTION : toutes les données de /dev/%s vont être effacées ! **\n" "$dst_disk"
-read -r -p "Continuer ? (yes/no) : " answer
-[ "$answer" == "yes" ] || { echo "Abandon."; exit 1; }
+read -r -p "Continuer ? (oui/non) : " reponse
+[ "$reponse" == "oui" ] || { echo "Abandon."; exit 1; }
+
+debut_horodatage=$(date '+%H:%M:%S')
+debut_sec=$(date '+%s')
+echo ""
+echo "Début du clonage : $debut_horodatage"
 
 # ==== Démontage préalable de toute partition de la destination ====
 
@@ -126,8 +143,13 @@ sfd=$(echo "$sfd" | sed -E "/\/dev\/${src_base}2/s/size=[^,]*,//")
 dlog "Table de partitions à appliquer sur /dev/$dst_disk :"
 ((debug)) && echo "$sfd" | while IFS= read -r line; do dlog "  $line"; done
 
-printf "\nPartitionnement de /dev/%s ...\n" "$dst_disk"
-sfdisk --force "/dev/$dst_disk" <<< "$sfd" || die "sfdisk a échoué sur /dev/$dst_disk."
+step "Partitionnement de /dev/$dst_disk"
+if ((debug))
+then
+	sfdisk --force "/dev/$dst_disk" <<< "$sfd" || die "sfdisk a échoué sur /dev/$dst_disk."
+else
+	sfdisk --force "/dev/$dst_disk" <<< "$sfd" > /dev/null || die "sfdisk a échoué sur /dev/$dst_disk."
+fi
 
 sync
 partprobe "/dev/$dst_disk"
@@ -144,8 +166,13 @@ dlog "Nouveau PARTUUID boot=$boot_partuuid root=$root_partuuid (source boot=$src
 
 # ==== Copie de la partition boot (dd, taille identique à la source) ====
 
-printf "Copie de la partition boot (dd %s -> %s) ...\n" "$src_p1" "$dst_p1"
-dd if="$src_p1" of="$dst_p1" bs=4M conv=fsync || die "dd de la partition boot a échoué."
+step "Copie de la partition boot ($src_p1 -> $dst_p1)"
+if ((debug))
+then
+	dd if="$src_p1" of="$dst_p1" bs=4M conv=fsync || die "dd de la partition boot a échoué."
+else
+	dd if="$src_p1" of="$dst_p1" bs=4M conv=fsync &> /dev/null || die "dd de la partition boot a échoué."
+fi
 
 if ((debug))
 then
@@ -160,7 +187,7 @@ fi
 
 # ==== Copie de la partition root (mkfs + rsync, tailles différentes possibles) ====
 
-printf "Formatage de la partition root (%s) ...\n" "$dst_p2"
+step "Formatage de la partition root ($dst_p2)"
 mkfs.ext4 -F -q "$dst_p2" || die "mkfs.ext4 a échoué sur $dst_p2."
 tune2fs -U random "$dst_p2" > /dev/null
 
@@ -175,14 +202,23 @@ cleanup()
 	}
 trap cleanup EXIT
 
-printf "Copie de la partition root (rsync / -> %s) ...\n" "$mnt"
+step "Copie de la partition root (rsync / -> $mnt)"
 rsync_opts="-aHAX --numeric-ids --delete"
 ((debug)) && rsync_opts="$rsync_opts --stats"
-rsync $rsync_opts \
-	--exclude="/dev/*" --exclude="/proc/*" --exclude="/sys/*" \
-	--exclude="/run/*" --exclude="/tmp/*" --exclude="/mnt/*" \
-	--exclude="/media/*" --exclude="lost+found" \
-	/ "$mnt/" || die "rsync de la partition root a échoué."
+if ((debug))
+then
+	rsync $rsync_opts \
+		--exclude="/dev/*" --exclude="/proc/*" --exclude="/sys/*" \
+		--exclude="/run/*" --exclude="/tmp/*" --exclude="/mnt/*" \
+		--exclude="/media/*" --exclude="lost+found" \
+		/ "$mnt/" || die "rsync de la partition root a échoué."
+else
+	rsync $rsync_opts \
+		--exclude="/dev/*" --exclude="/proc/*" --exclude="/sys/*" \
+		--exclude="/run/*" --exclude="/tmp/*" --exclude="/mnt/*" \
+		--exclude="/media/*" --exclude="lost+found" \
+		/ "$mnt/" > /dev/null || die "rsync de la partition root a échoué."
+fi
 
 mkdir -p "$mnt/boot/firmware"
 mount "$dst_p1" "$mnt/boot/firmware" || die "impossible de monter $dst_p1 sur $mnt/boot/firmware."
@@ -195,7 +231,7 @@ fi
 
 # ==== Correction des PARTUUID dans fstab et cmdline.txt ====
 
-printf "Mise à jour des PARTUUID dans fstab et cmdline.txt ...\n"
+step "Mise à jour des PARTUUID (fstab, cmdline.txt)"
 sed -i "s/${src_id}/${new_id}/g" "$mnt/etc/fstab"
 
 cmdline_txt="$mnt/boot/firmware/cmdline.txt"
@@ -207,7 +243,7 @@ else
 	dlog "Aucun cmdline.txt trouvé (ni boot/firmware ni boot), rien à corriger."
 fi
 
-# ==== Vérification finale (debug) ====
+# ==== Vérification finale (debug uniquement) ====
 
 if ((debug))
 then
@@ -233,4 +269,12 @@ then
 	grep PARTUUID "$mnt/etc/fstab" | while IFS= read -r line; do dlog "  $line"; done
 fi
 
-printf "\nClone de /dev/%s vers /dev/%s terminé.\n" "$src_disk" "$dst_disk"
+fin_horodatage=$(date '+%H:%M:%S')
+fin_sec=$(date '+%s')
+duree_sec=$((fin_sec - debut_sec))
+
+echo ""
+echo "Fin du clonage    : $fin_horodatage"
+printf "Durée du clonage  : %d min %02d s\n" "$((duree_sec / 60))" "$((duree_sec % 60))"
+echo ""
+printf "Clone de /dev/%s vers /dev/%s terminé.\n" "$src_disk" "$dst_disk"
