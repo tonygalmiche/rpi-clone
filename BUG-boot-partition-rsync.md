@@ -106,3 +106,49 @@ de l'état de montage. Plus robuste que mkfs + rsync :
 Après le dd, la partition est montée dans un répertoire tmp, les fichiers sont
 comptés, et le clone est abandonné si la partition est vide — avant le long
 rsync root (~10 min).
+
+## Bug n°2 (introduit par le fix v3.4.0) : PARTUUID jamais corrigé dans cmdline.txt
+
+### Symptôme
+
+Après un clone "réussi" en v3.4.0 (boot copié, vérification OK : 50 fichiers),
+le Pi cloné ne démarre pas. Au boot :
+
+```
+Gave up waiting for root file system device.
+ALERT!  PARTUUID=92e253d6-02 does not exist.  Dropping to a shell!
+```
+
+### Cause
+
+`92e253d6-02` est le PARTUUID **de la source** (mmcblk0p2), encore présent
+dans `root=PARTUUID=...` de `cmdline.txt` après le clone. En fin de script,
+rpi-clone corrige normalement cette référence (section "Fix PARTUUID or
+device name references in cmdline.txt and fstab") en remplaçant
+`$src_disk_ID` par `$dst_disk_ID` dans :
+
+```bash
+cmdline_txt=${clone}${boot_mount}/cmdline.txt   # ex: /mnt/clone/boot/firmware/cmdline.txt
+```
+
+Cette correction suppose que la partition boot de destination est **montée**
+sous `${clone}${boot_mount}`. Or le fix v3.4.0 copie la partition boot avec
+`dd` directement sur le device brut (`/dev/sda1`), sans jamais la monter à cet
+endroit : les boucles de sync (pré-sync et post-sync) ignorent volontairement
+cette partition puisque `src_sync_part[1]=0`. Résultat : `[ -f $cmdline_txt ]`
+est faux, le bloc de correction est silencieusement sauté, et `cmdline.txt`
+garde l'ancien PARTUUID de la source → le kernel cible cherche un PARTUUID
+qui n'existe pas sur le disque cloné.
+
+### Fix implémenté en v3.5.0
+
+La partition boot copiée par `dd` est désormais explicitement remontée sur
+`${clone}${boot_mount}` dans la boucle de pré-sync, **après** que la
+partition root a été montée sur `$clone` (pour éviter qu'un montage
+prématuré ne soit masqué par le montage ultérieur de root — problème
+classique de mounts imbriqués sous Linux). Cela permet à la correction du
+PARTUUID de `cmdline.txt` de s'exécuter normalement, comme pour n'importe
+quelle partition synchronisée par rsync.
+
+Le nombre de fichiers visibles après ce montage est vérifié (variable
+`boot_dd_part`), avec abandon immédiat si la partition apparaît vide.

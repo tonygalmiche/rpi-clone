@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.4.0
+version=3.5.1
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -673,6 +673,7 @@ src_part_base=""
 
 boot_part_num=0
 alt_root_part_num=0
+boot_dd_part=0
 
 
 if [ "$src_boot_dev" == "" ]
@@ -1639,6 +1640,11 @@ Use -U for unattended even if initializing.
 				fi
 				rmdir "$verify_dd_tmp"
 			fi
+			# La partition boot est copiée en raw (dd), donc jamais montée par les
+			# boucles de sync. On retient son numéro pour la monter explicitement
+			# plus tard (après le montage de root), afin que cmdline.txt soit
+			# accessible pour la correction du PARTUUID.
+			boot_dd_part=$p
 			src_sync_part[p]=0
 		else
 			if [ "$fs_type" == "swap" ]
@@ -1864,7 +1870,32 @@ do
 		continue
 	fi
 	dlog "Pré-sync partition $p : src_sync=${src_sync_part[$p]}  mount_flag=${dst_mount_flag[$p]}  root=$root_part_num  mounted=${src_mounted_dir[$p]}"
-	if ((p != root_part_num && src_sync_part[p] && dst_mount_flag[p] == live))
+	if ((boot_dd_part && p == boot_dd_part))
+	then
+		# Partition boot déjà copiée en raw (dd) pendant l'INITIALIZE. Il faut
+		# quand même la monter ici, maintenant que root est monté sur $clone,
+		# pour que cmdline.txt soit trouvé par la correction du PARTUUID plus
+		# loin dans le script (sinon ${clone}${boot_mount} resterait vide et
+		# le kernel cible chercherait l'ancien PARTUUID source au boot).
+		dst_dir=$clone${src_mounted_dir[p]}
+		dst_dev=/dev/${dst_part_base}${p}
+		if [ ! -d "$dst_dir" ]; then mkdir -p "$dst_dir"; fi
+		dlog "  Montage p$p (boot, déjà copiée par dd) : $dst_dev -> $dst_dir"
+		mount_partition "$dst_dev" "$dst_dir" "$unmount_list"
+		dd_mount_count=$(ls -1 "$dst_dir/" 2>/dev/null | wc -l)
+		dlog "  Vérification après montage p$p : $dd_mount_count entrées dans $dst_dir"
+		unmount_list="$dst_dir $unmount_list"
+		presync_done[$p]=1
+		if [ "$dd_mount_count" -eq 0 ]
+		then
+			printf "\n** ERREUR : partition %d (%s) vide après dd **\n" \
+				$p "${src_mounted_dir[$p]}" | tee -a "$debug_log"
+			printf "** Abandon avant le rsync root pour éviter une attente inutile **\n" \
+				| tee -a "$debug_log"
+			unmount_list "$unmount_list"
+			exit 1
+		fi
+	elif ((p != root_part_num && src_sync_part[p] && dst_mount_flag[p] == live))
 	then
 		dst_dir=$clone${src_mounted_dir[p]}
 		if [ ! -d "$dst_dir" ]
@@ -1996,6 +2027,38 @@ elif [ "$edit_fstab_name" != "" ] && grep -q ${src_part_base} $fstab
 then
 	qecho "Editing $fstab references from $src_part_base to $edit_fstab_name"
 	sed -i "s/${src_part_base}/${edit_fstab_name}/" "$fstab"
+fi
+
+if ((debug))
+then
+	dlog "Vérification PARTUUID cmdline.txt / fstab vs disque réel :"
+	real_root_partuuid=$(blkid -s PARTUUID -o value "$dst_root_dev" 2>/dev/null)
+	dlog "  PARTUUID réel de $dst_root_dev (root) : ${real_root_partuuid:-introuvable}"
+	if ((boot_dd_part))
+	then
+		dst_boot_dev=/dev/${dst_part_base}${boot_dd_part}
+		real_boot_partuuid=$(blkid -s PARTUUID -o value "$dst_boot_dev" 2>/dev/null)
+		dlog "  PARTUUID réel de $dst_boot_dev (boot) : ${real_boot_partuuid:-introuvable}"
+	fi
+	if [ -f "$cmdline_txt" ]
+	then
+		cmdline_root_ref=$(grep -o 'root=[^ ]*' "$cmdline_txt")
+		dlog "  $cmdline_txt : $cmdline_root_ref"
+		cmdline_root_partuuid=${cmdline_root_ref#root=PARTUUID=}
+		if [ "$cmdline_root_partuuid" == "$real_root_partuuid" ]
+		then
+			dlog "  => OK : PARTUUID cmdline.txt concorde avec le disque."
+		else
+			dlog "  => ATTENTION : PARTUUID cmdline.txt ($cmdline_root_partuuid) NE concorde PAS avec le disque ($real_root_partuuid) !"
+		fi
+	else
+		dlog "  $cmdline_txt introuvable, impossible de vérifier."
+	fi
+	if [ -f "$fstab" ]
+	then
+		dlog "  $fstab :"
+		grep -E '^[^#]*PARTUUID=' "$fstab" | while IFS= read -r fstab_line; do dlog "    $fstab_line"; done
+	fi
 fi
 
 

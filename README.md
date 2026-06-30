@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.4.0
+Latest version: 3.5.1
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -7,6 +7,23 @@ Latest version: 3.4.0
 > reprend le développement à partir de la version 2.0.22.
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
+
+### Nouveautés version 3.5.1
+- **Mode `--debug`** : vérification explicite après le clone que le PARTUUID
+  inscrit dans `cmdline.txt` (et `fstab`) correspond bien au PARTUUID réel de
+  la partition sur le disque de destination (lu avec `blkid`). Permet de
+  confirmer immédiatement qu'il n'y aura pas de `ALERT! PARTUUID=... does not
+  exist` au prochain démarrage, sans avoir à redémarrer le Pi pour le savoir.
+
+### Nouveautés version 3.5.0
+- **Correction du boot KO après le fix 3.4.0** (voir `BUG-boot-partition-rsync.md`) :
+  la copie `dd` de la partition boot la sortait du circuit de montage du script,
+  donc `cmdline.txt` n'était jamais trouvé pour corriger son `root=PARTUUID=...`.
+  Résultat : le Pi cloné démarrait avec l'ancien PARTUUID (celui de la source) et
+  tombait dans un shell initramfs (`ALERT! PARTUUID=... does not exist`).
+  La partition boot copiée par `dd` est désormais explicitement remontée sur
+  `${clone}/boot/firmware` une fois la partition root montée, pour que la
+  correction du PARTUUID dans `cmdline.txt` s'applique normalement.
 
 ### Nouveautés version 3.4.0
 - **Correction du bug partition boot vide** (voir `BUG-boot-partition-rsync.md`
