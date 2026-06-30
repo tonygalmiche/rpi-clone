@@ -12,7 +12,7 @@
 # Fork : https://github.com/tgalmiche/rpi-clone
 
 
-version=3.5.1
+version=3.5
 
 # setup trusted paths for dependancies (like rsync, grub, fdisk, etc)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1522,6 +1522,14 @@ Use -U for unattended even if initializing.
 	part="${src_part_base}$n_image_parts"
 	sfd1=$(echo "$sfd0" | sed "\/dev\/$part/s/size=[^,]*,//")
 
+	# Le dump sfdisk de la source contient "label-id: 0x<id>" (Disk ID MBR).
+	# Le réécrire ici, AVANT l'appel à sfdisk, évite que la destination porte
+	# un instant le même Disk ID/PARTUUID que la source : sinon systemd détecte
+	# le conflit dès l'écriture de la table de partitions et démonte la
+	# partition boot source (voir BUG-boot-partition-rsync.md, bug n°3).
+	new_disk_id=$(od -A n -t x -N 4 /dev/urandom | tr -d " ")
+	sfd1=$(echo "$sfd1" | sed -E "s/^label-id: .*/label-id: 0x$new_disk_id/")
+
 	if ((ext_part_num > 0 && !force_2_parts))
 	then
 		part="${src_part_base}$ext_part_num"
@@ -1562,13 +1570,11 @@ Use -U for unattended even if initializing.
 		fi
 	done
 	printf "\n    Resize success.\n"
-	# Changer le disk ID immédiatement après sfdisk, avant partprobe et le sleep,
-	# pour éviter que systemd détecte un conflit de PARTUUID et démonte /boot/firmware.
-	printf "  Changing destination Disk ID ..."
-	new_id=$(od -A n -t x -N 4 /dev/urandom | tr -d " ")
-	qprintf "x\ni\n0x$new_id\nr\nw\nq\n" | fdisk /dev/$dst_disk > /dev/null
+	# Le Disk ID de destination a déjà été fixé à une valeur aléatoire dans
+	# $sfd1 avant l'appel à sfdisk ci-dessus (voir new_disk_id) : pas besoin
+	# de le changer une seconde fois ici, ça ne ferait que rouvrir une fenêtre
+	# de conflit PARTUUID pour rien.
 	sync
-	sleep 2
 	partprobe "/dev/$dst_disk"
 	sleep 2
 	echo ""

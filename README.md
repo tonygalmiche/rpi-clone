@@ -1,5 +1,5 @@
 ## rpi-clone
-Latest version: 3.5.1
+Latest version: 3.5
 
 > **Fork maintenu** — Le dépôt original de Bill Wilson
 > ([billw2/rpi-clone](https://github.com/billw2/rpi-clone)) n'est plus maintenu
@@ -8,22 +8,24 @@ Latest version: 3.5.1
 >
 > Mainteneur : Tony Galmiche &lt;tony.galmiche@infosaone.com&gt;
 
-### Nouveautés version 3.5.1
-- **Mode `--debug`** : vérification explicite après le clone que le PARTUUID
-  inscrit dans `cmdline.txt` (et `fstab`) correspond bien au PARTUUID réel de
-  la partition sur le disque de destination (lu avec `blkid`). Permet de
-  confirmer immédiatement qu'il n'y aura pas de `ALERT! PARTUUID=... does not
-  exist` au prochain démarrage, sans avoir à redémarrer le Pi pour le savoir.
-
-### Nouveautés version 3.5.0
-- **Correction du boot KO après le fix 3.4.0** (voir `BUG-boot-partition-rsync.md`) :
-  la copie `dd` de la partition boot la sortait du circuit de montage du script,
-  donc `cmdline.txt` n'était jamais trouvé pour corriger son `root=PARTUUID=...`.
-  Résultat : le Pi cloné démarrait avec l'ancien PARTUUID (celui de la source) et
-  tombait dans un shell initramfs (`ALERT! PARTUUID=... does not exist`).
-  La partition boot copiée par `dd` est désormais explicitement remontée sur
-  `${clone}/boot/firmware` une fois la partition root montée, pour que la
-  correction du PARTUUID dans `cmdline.txt` s'applique normalement.
+### Nouveautés version 3.5
+Suite du correctif du bug "partition boot vide" de la 3.4.0 (voir
+`BUG-boot-partition-rsync.md`) : le clone semblait réussi (boot copié,
+fichiers vérifiés) mais le Pi cloné ne démarrait pas (`ALERT! PARTUUID=...
+does not exist`, shell initramfs).
+- Le Disk ID de destination est désormais fixé à une valeur aléatoire
+  **directement dans le dump sfdisk**, avant l'écriture de la table de
+  partitions. C'est la vraie cause racine : sda portait le même PARTUUID que
+  mmcblk0 dès l'écriture par `sfdisk`, donc systemd démontait
+  `/boot/firmware` côté source avant même que le script n'ait pu changer le
+  Disk ID après coup (l'ancien correctif 3.4.0 arrivait toujours trop tard).
+- La partition boot copiée par `dd` est remontée explicitement sous
+  `${clone}/boot/firmware` après le montage de root, pour que la correction
+  du PARTUUID dans `cmdline.txt`/`fstab` (qui pointait encore vers l'ancien
+  PARTUUID de la source) s'applique normalement.
+- Mode `--debug` : vérification finale que le PARTUUID inscrit dans
+  `cmdline.txt`/`fstab` correspond au PARTUUID réel du disque (`blkid`), pour
+  confirmer le clone sans avoir à redémarrer le Pi.
 
 ### Nouveautés version 3.4.0
 - **Correction du bug partition boot vide** (voir `BUG-boot-partition-rsync.md`
