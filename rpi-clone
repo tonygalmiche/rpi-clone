@@ -655,8 +655,17 @@ then
 	src_boot_dev=`findmnt /boot/firmware -o source -n | grep "/dev/"`
 fi
 
-# Determine the boot partition mount point for use throughout the script
-if findmnt /boot/firmware > /dev/null 2>&1
+# Determine the boot partition mount point for use throughout the script.
+# Se fier à /etc/fstab plutôt qu'à findmnt seul : /boot/firmware peut être
+# démonté (ex. reliquat d'un précédent clone interrompu par systemd suite à
+# un conflit de PARTUUID, sans reboot depuis) sans que ça change où vit
+# réellement cmdline.txt. Sur Bookworm/Trixie, /boot/cmdline.txt n'est qu'un
+# stub renvoyant vers /boot/firmware/cmdline.txt : se rabattre sur /boot
+# alors que fstab prévoit /boot/firmware casserait la correction du PARTUUID.
+if grep -qE '\s/boot/firmware\s' /etc/fstab 2>/dev/null
+then
+	boot_mount="/boot/firmware"
+elif findmnt /boot/firmware > /dev/null 2>&1
 then
 	boot_mount="/boot/firmware"
 elif findmnt /boot > /dev/null 2>&1
@@ -1613,13 +1622,17 @@ Use -U for unattended even if initializing.
 			mkfs_type=$fs_type
 		fi
 
-		if [ "${src_mounted_dir[p]}" == "$boot_mount" ] && ((p == 1))
+		if ((p == 1)) && [[ "$fs_type" == fat16 || "$fs_type" == fat32 ]]
 		then
-			# Toujours utiliser dd pour la partition boot, même si elle est montée.
-			# rsync sur FAT32 peut retourner rc=0 sans rien copier (incompatibilité
-			# des flags -A/-X). De plus, sfdisk peut provoquer un démontage par
-			# systemd si le PARTUUID conflicte — dd lit le device brut, immune à
-			# l'état du montage.
+			# Toujours utiliser dd pour la partition boot, qu'elle soit montée ou
+			# non sur la source. rsync sur FAT32 peut retourner rc=0 sans rien
+			# copier (incompatibilité des flags -A/-X). De plus, sfdisk peut
+			# provoquer un démontage par systemd si le PARTUUID conflicte (et ce
+			# démontage peut persister d'un run précédent sans reboot) — dd lit
+			# le device brut, immune à l'état du montage. On n'utilise plus
+			# src_mounted_dir[p]==boot_mount comme condition : ce test échoue à
+			# tort quand la partition boot est restée démontée d'un essai
+			# précédent, alors qu'elle reste bien la partition boot à traiter ici.
 			printf "  => dd if=${src_device[$p]} of=$dst_dev bs=1M ..."
 			dd if=${src_device[$p]} of=$dst_dev bs=1M &>> $tmp_out
 			if [ "$?" != 0 ]
@@ -1883,7 +1896,9 @@ do
 		# pour que cmdline.txt soit trouvé par la correction du PARTUUID plus
 		# loin dans le script (sinon ${clone}${boot_mount} resterait vide et
 		# le kernel cible chercherait l'ancien PARTUUID source au boot).
-		dst_dir=$clone${src_mounted_dir[p]}
+		# On utilise $boot_mount (pas src_mounted_dir[p], qui peut être vide
+		# si la partition boot n'était pas montée sur la source).
+		dst_dir=$clone$boot_mount
 		dst_dev=/dev/${dst_part_base}${p}
 		if [ ! -d "$dst_dir" ]; then mkdir -p "$dst_dir"; fi
 		dlog "  Montage p$p (boot, déjà copiée par dd) : $dst_dev -> $dst_dir"

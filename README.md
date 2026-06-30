@@ -26,6 +26,11 @@ does not exist`, shell initramfs).
 - Mode `--debug` : vérification finale que le PARTUUID inscrit dans
   `cmdline.txt`/`fstab` correspond au PARTUUID réel du disque (`blkid`), pour
   confirmer le clone sans avoir à redémarrer le Pi.
+- Détection de `boot_mount` basée sur `/etc/fstab` plutôt que le seul état de
+  montage live : si `/boot/firmware` est resté démonté (reliquat d'un essai
+  précédent), le script ne se trompait plus de fichier `cmdline.txt`
+  (`/boot/cmdline.txt` n'étant qu'un stub renvoyant vers
+  `/boot/firmware/cmdline.txt` sur Bookworm/Trixie).
 
 ### Nouveautés version 3.4.0
 - **Correction du bug partition boot vide** (voir `BUG-boot-partition-rsync.md`
