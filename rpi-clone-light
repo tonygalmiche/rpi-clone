@@ -55,7 +55,6 @@ dlog()
 
 step()
 	{
-	((!debug)) && printf "  - %s\n" "$1"
 	dlog "$1"
 	}
 
@@ -103,19 +102,22 @@ dst_p2="/dev/${dst_base}2"
 src_size=$(lsblk -bdno SIZE "/dev/$src_disk")
 dst_size=$(lsblk -bdno SIZE "/dev/$dst_disk")
 
-echo "=== $PGM $version ==="
-printf "Source      : /dev/%s (%s)\n" "$src_disk" "$(taille "$src_size")"
-printf "Destination : /dev/%s (%s)\n" "$dst_disk" "$(taille "$dst_size")"
+if ((debug))
+then
+	echo "=== $PGM $version ==="
+	printf "Source      : /dev/%s (%s)\n" "$src_disk" "$(taille "$src_size")"
+	printf "Destination : /dev/%s (%s)\n" "$dst_disk" "$(taille "$dst_size")"
+fi
 dlog "src_p1=$src_p1 src_p2=$src_p2 dst_p1=$dst_p1 dst_p2=$dst_p2"
 
-printf "\n** ATTENTION : toutes les données de /dev/%s vont être effacées ! **\n" "$dst_disk"
+printf "** ATTENTION : toutes les données de /dev/%s (%s) vont être effacées ! (source : /dev/%s, %s) **\n" \
+	"$dst_disk" "$(taille "$dst_size")" "$src_disk" "$(taille "$src_size")"
 read -r -p "Continuer ? (oui/non) : " reponse
 [ "$reponse" == "oui" ] || { echo "Abandon."; exit 1; }
 
 debut_horodatage=$(date '+%H:%M:%S')
 debut_sec=$(date '+%s')
-echo ""
-echo "Début du clonage : $debut_horodatage"
+echo "Début : $debut_horodatage"
 
 # ==== Démontage préalable de toute partition de la destination ====
 
@@ -273,8 +275,5 @@ fin_horodatage=$(date '+%H:%M:%S')
 fin_sec=$(date '+%s')
 duree_sec=$((fin_sec - debut_sec))
 
-echo ""
-echo "Fin du clonage    : $fin_horodatage"
-printf "Durée du clonage  : %d min %02d s\n" "$((duree_sec / 60))" "$((duree_sec % 60))"
-echo ""
-printf "Clone de /dev/%s vers /dev/%s terminé.\n" "$src_disk" "$dst_disk"
+echo "Fin   : $fin_horodatage (durée : $((duree_sec / 60)) min $((duree_sec % 60)) s)"
+printf "Clone /dev/%s -> /dev/%s terminé.\n" "$src_disk" "$dst_disk"
